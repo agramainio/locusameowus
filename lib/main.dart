@@ -22,9 +22,14 @@ void main() async {
 Future<List<String>> loadFirebaseImageUrls() async {
   final listedUrls = await loadListedFirebaseImageUrls();
 
-  if (listedUrls.isNotEmpty) {
+  if (listedUrls.length >= photoCount) {
     return listedUrls;
   }
+
+  debugPrint(
+    'Storage list returned ${listedUrls.length}/$photoCount photos; '
+    'falling back to generated paths.',
+  );
 
   return loadGeneratedFirebaseImageUrls();
 }
