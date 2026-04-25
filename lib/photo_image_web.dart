@@ -36,7 +36,9 @@ class _FullscreenWebPhoto extends StatefulWidget {
 
 class _FullscreenWebPhotoState extends State<_FullscreenWebPhoto> {
   late final web.HTMLDivElement layer;
+  late final web.HTMLImageElement image;
   late final web.EventListener tapListener;
+  late final web.EventListener resizeListener;
 
   @override
   void initState() {
@@ -45,12 +47,21 @@ class _FullscreenWebPhotoState extends State<_FullscreenWebPhoto> {
     web.document.getElementById(_photoLayerId)?.remove();
 
     layer = web.HTMLDivElement()..id = _photoLayerId;
+    image = web.HTMLImageElement()
+      ..alt = ''
+      ..decoding = 'async'
+      ..loading = 'eager';
     tapListener = ((web.Event event) {
       event.preventDefault();
       widget.onTap();
     }).toJS;
+    resizeListener = ((web.Event _) {
+      updateLayer();
+    }).toJS;
 
     layer.addEventListener('pointerup', tapListener);
+    web.window.addEventListener('resize', resizeListener);
+    layer.appendChild(image);
     web.document.body?.appendChild(layer);
     web.document.body?.style.setProperty('margin', '0');
     web.document.body?.style.setProperty('overflow', 'hidden');
@@ -70,33 +81,47 @@ class _FullscreenWebPhotoState extends State<_FullscreenWebPhoto> {
   @override
   void dispose() {
     layer.removeEventListener('pointerup', tapListener);
+    web.window.removeEventListener('resize', resizeListener);
     layer.remove();
     super.dispose();
   }
 
   void updateLayer() {
+    final width = web.window.innerWidth;
+    final height = web.window.innerHeight;
+
     layer.style.cssText =
         '''
       position: fixed;
       inset: 0;
       left: 0;
       top: 0;
-      width: 100vw;
-      height: 100vh;
-      height: 100dvh;
-      min-width: 100vw;
-      min-height: 100vh;
-      min-height: 100dvh;
+      width: ${width}px;
+      height: ${height}px;
       z-index: 2147483647;
       overflow: hidden;
       background-color: black;
-      background-image: url("${widget.url}");
-      background-size: cover;
-      background-position: center center;
-      background-repeat: no-repeat;
       cursor: pointer;
       user-select: none;
       touch-action: manipulation;
+    ''';
+
+    image.src = widget.url;
+    image.style.cssText =
+        '''
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: ${width}px;
+      height: ${height}px;
+      object-fit: contain;
+      object-position: center center;
+      display: block;
+      background: black;
+      max-width: none;
+      max-height: none;
+      -webkit-user-drag: none;
+      user-select: none;
     ''';
   }
 

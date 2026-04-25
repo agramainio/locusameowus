@@ -9,8 +9,7 @@ import 'photo_image.dart';
 
 const startupImageUrl =
     'https://firebasestorage.googleapis.com/v0/b/locusameowus.firebasestorage.app/o/img%2Fimage1.png?alt=media&token=6c0b85b1-fe11-4070-9420-28a028f1136a';
-const photoCount = 1812;
-const firebaseBatchSize = 50;
+const preloadAheadCount = 6;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,70 +18,29 @@ void main() async {
   runApp(const MyApp());
 }
 
-Future<List<String>> loadFirebaseImageUrls() async {
-  final listedUrls = await loadListedFirebaseImageUrls();
+class PhotoEntry {
+  PhotoEntry.fromUrl(this.url) : ref = null;
 
-  if (listedUrls.length >= photoCount) {
-    return listedUrls;
+  PhotoEntry.fromRef(this.ref);
+
+  final Reference? ref;
+  String? url;
+  Future<String?>? urlFuture;
+
+  String get name {
+    final currentUrl = url;
+
+    if (ref != null) return ref!.name;
+    if (currentUrl != null) return photoNameFromUrl(currentUrl);
+
+    return 'photo';
   }
-
-  debugPrint(
-    'Storage list returned ${listedUrls.length}/$photoCount photos; '
-    'falling back to generated paths.',
-  );
-
-  return loadGeneratedFirebaseImageUrls();
 }
 
-Future<List<String>> loadListedFirebaseImageUrls() async {
-  final storageRef = FirebaseStorage.instance.ref('cats');
-  final imageUrls = <String>[];
-  String? pageToken;
+String photoNameFromUrl(String url) {
+  final objectPath = Uri.decodeComponent(Uri.parse(url).pathSegments.last);
 
-  try {
-    do {
-      final page = await storageRef.list(
-        ListOptions(maxResults: 1000, pageToken: pageToken),
-      );
-
-      final pageUrls = await Future.wait(
-        page.items.map((item) => item.getDownloadURL()),
-      );
-
-      imageUrls.addAll(pageUrls);
-      pageToken = page.nextPageToken;
-    } while (pageToken != null);
-  } catch (error) {
-    debugPrint('Storage list failed, falling back to generated paths: $error');
-  }
-
-  return imageUrls;
-}
-
-Future<List<String>> loadGeneratedFirebaseImageUrls() async {
-  final storage = FirebaseStorage.instance;
-  final imageUrls = <String>[];
-
-  for (var start = 1; start <= photoCount; start += firebaseBatchSize) {
-    final end = min(start + firebaseBatchSize - 1, photoCount);
-    final batchIndexes = [for (var i = start; i <= end; i++) i];
-    final batchUrls = await Future.wait(
-      batchIndexes.map((index) async {
-        final photoNumber = index.toString().padLeft(5, '0');
-        final photoRef = storage.ref('cats/romeo_$photoNumber.jpg');
-
-        try {
-          return await photoRef.getDownloadURL();
-        } catch (_) {
-          return null;
-        }
-      }),
-    );
-
-    imageUrls.addAll(batchUrls.nonNulls);
-  }
-
-  return imageUrls;
+  return objectPath.split('/').last;
 }
 
 class MyApp extends StatelessWidget {
@@ -98,12 +56,9 @@ class MyApp extends StatelessWidget {
 }
 
 class PhotoViewerScreen extends StatefulWidget {
-  const PhotoViewerScreen({
-    super.key,
-    this.loadImageUrls = loadFirebaseImageUrls,
-  });
+  const PhotoViewerScreen({super.key, this.initialImageUrls});
 
-  final Future<List<String>> Function() loadImageUrls;
+  final List<String>? initialImageUrls;
 
   @override
   State<PhotoViewerScreen> createState() => _PhotoViewerScreenState();
@@ -111,8 +66,9 @@ class PhotoViewerScreen extends StatefulWidget {
 
 class _PhotoViewerScreenState extends State<PhotoViewerScreen> {
   final Random random = Random();
+  final Set<String> preloadedUrls = {};
 
-  List<String> imageUrls = [];
+  List<PhotoEntry> photos = [];
   bool isLoading = true;
 
   int currentIndex = 0;
@@ -124,23 +80,66 @@ class _PhotoViewerScreenState extends State<PhotoViewerScreen> {
   }
 
   Future<void> loadImages() async {
-    try {
-      final loadedUrls = await widget.loadImageUrls();
-      loadedUrls.shuffle(random);
+    final initialImageUrls = widget.initialImageUrls;
 
-      if (!mounted) return;
+    if (initialImageUrls != null) {
+      final initialPhotos = initialImageUrls.map(PhotoEntry.fromUrl).toList()
+        ..shuffle(random);
 
       setState(() {
-        imageUrls = loadedUrls;
+        photos = initialPhotos;
         isLoading = false;
         currentIndex = 0;
       });
-      debugPrint('Loaded ${imageUrls.length} images from Firebase Storage');
-      debugPrint('Shuffle order: ${imageUrls.map(photoName).join(', ')}');
 
-      if (imageUrls.length > 1) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => preloadNextImage());
+      if (photos.length > 1) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => preloadUpcomingImages(),
+        );
       }
+
+      return;
+    }
+
+    try {
+      final storageRef = FirebaseStorage.instance.ref('cats');
+      String? pageToken;
+
+      do {
+        final page = await storageRef.list(
+          ListOptions(maxResults: 1000, pageToken: pageToken),
+        );
+        final items = page.items.toList()..shuffle(random);
+
+        if (!mounted) return;
+
+        setState(() {
+          final newPhotos = items.map(PhotoEntry.fromRef).toList();
+
+          if (photos.isEmpty) {
+            photos = newPhotos;
+          } else {
+            photos.addAll(newPhotos);
+          }
+
+          isLoading = false;
+          currentIndex = currentIndex.clamp(0, photos.length - 1);
+        });
+
+        debugPrint('Found ${photos.length} photo refs from Firebase Storage');
+
+        if (photos.isNotEmpty) {
+          await resolvePhotoAtIndex(currentIndex);
+        }
+
+        if (photos.length > 1) {
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => preloadUpcomingImages(),
+          );
+        }
+
+        pageToken = page.nextPageToken;
+      } while (pageToken != null);
     } catch (error) {
       debugPrint('Failed to load images from Firebase Storage: $error');
 
@@ -153,23 +152,23 @@ class _PhotoViewerScreenState extends State<PhotoViewerScreen> {
   }
 
   int get nextIndex {
-    if (imageUrls.isEmpty) return 0;
+    if (photos.isEmpty) return 0;
 
-    return (currentIndex + 1) % imageUrls.length;
+    return (currentIndex + 1) % photos.length;
   }
 
   void showNextImage() {
-    if (imageUrls.isEmpty) return;
+    if (photos.isEmpty) return;
 
     setState(() {
-      if (currentIndex == imageUrls.length - 1) {
-        final currentUrl = imageUrls[currentIndex];
-        imageUrls.shuffle(random);
+      if (currentIndex == photos.length - 1) {
+        final currentPhoto = photos[currentIndex];
+        photos.shuffle(random);
 
-        if (imageUrls.first == currentUrl && imageUrls.length > 1) {
-          final firstUrl = imageUrls[0];
-          imageUrls[0] = imageUrls[1];
-          imageUrls[1] = firstUrl;
+        if (photos.first == currentPhoto && photos.length > 1) {
+          final firstPhoto = photos[0];
+          photos[0] = photos[1];
+          photos[1] = firstPhoto;
         }
 
         currentIndex = 0;
@@ -178,23 +177,69 @@ class _PhotoViewerScreenState extends State<PhotoViewerScreen> {
       }
     });
     debugPrint(
-      'Showing ${photoName(imageUrls[currentIndex])} '
-      '(${currentIndex + 1}/${imageUrls.length})',
+      'Showing ${photos[currentIndex].name} '
+      '(${currentIndex + 1}/${photos.length})',
     );
 
-    WidgetsBinding.instance.addPostFrameCallback((_) => preloadNextImage());
+    resolvePhotoAtIndex(currentIndex);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => preloadUpcomingImages(),
+    );
   }
 
-  String photoName(String url) {
-    final objectPath = Uri.decodeComponent(Uri.parse(url).pathSegments.last);
+  Future<String?> resolvePhotoAtIndex(int index) {
+    if (index < 0 || index >= photos.length) {
+      return Future.value(null);
+    }
 
-    return objectPath.split('/').last;
+    final photo = photos[index];
+
+    if (photo.url != null) {
+      return Future.value(photo.url);
+    }
+
+    final ref = photo.ref;
+
+    if (ref == null) {
+      return Future.value(null);
+    }
+
+    photo.urlFuture ??= () async {
+      try {
+        final url = await ref.getDownloadURL();
+        photo.url = url;
+
+        return url;
+      } catch (error) {
+        debugPrint('Failed to resolve ${ref.fullPath}: $error');
+
+        return null;
+      }
+    }();
+
+    return photo.urlFuture!.then((url) {
+      if (mounted && url != null) {
+        setState(() {});
+      }
+
+      return url;
+    });
   }
 
-  void preloadNextImage() {
-    if (!mounted || imageUrls.length < 2) return;
+  void preloadUpcomingImages() {
+    if (!mounted || photos.length < 2) return;
 
-    preloadPhotoImage(url: imageUrls[nextIndex], context: context);
+    for (var step = 1; step <= preloadAheadCount; step++) {
+      final preloadIndex = (currentIndex + step) % photos.length;
+
+      resolvePhotoAtIndex(preloadIndex).then((url) {
+        if (!mounted || url == null) return;
+
+        if (preloadedUrls.add(url)) {
+          preloadPhotoImage(url: url, context: context);
+        }
+      });
+    }
   }
 
   Widget buildBody() {
@@ -202,11 +247,19 @@ class _PhotoViewerScreenState extends State<PhotoViewerScreen> {
       return buildPhotoImage(url: startupImageUrl, onTap: () {});
     }
 
-    if (imageUrls.isEmpty) {
+    if (photos.isEmpty) {
       return buildPhotoImage(url: startupImageUrl, onTap: () {});
     }
 
-    return buildPhotoImage(url: imageUrls[currentIndex], onTap: showNextImage);
+    final currentUrl = photos[currentIndex].url;
+
+    if (currentUrl == null) {
+      resolvePhotoAtIndex(currentIndex);
+
+      return buildPhotoImage(url: startupImageUrl, onTap: () {});
+    }
+
+    return buildPhotoImage(url: currentUrl, onTap: showNextImage);
   }
 
   @override

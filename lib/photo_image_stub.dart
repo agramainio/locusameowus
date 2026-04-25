@@ -9,7 +9,7 @@ Widget buildPlatformPhotoImage({
     onTap: onTap,
     child: Image.network(
       url,
-      fit: BoxFit.cover,
+      fit: BoxFit.contain,
       gaplessPlayback: true,
       loadingBuilder: (context, child, loadingProgress) {
         if (loadingProgress == null) return child;

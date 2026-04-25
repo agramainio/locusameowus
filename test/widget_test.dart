@@ -12,9 +12,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: PhotoViewerScreen(
-          loadImageUrls: () async => expectedUrls.toList(),
-        ),
+        home: PhotoViewerScreen(initialImageUrls: expectedUrls.toList()),
       ),
     );
     await tester.pump();
